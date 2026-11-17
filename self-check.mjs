@@ -1,18 +1,24 @@
-// Run with: node ~/.pi/agent/extensions/context-compact/self-check.mjs
+// Run from the repository: node self-check.mjs
 // Offline: uses disposable configuration and simulated model responses, never real credentials.
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, writeFile, copyFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
-const install = process.env.PI_MANAGED_INSTALL_ROOT ?? resolve(here, "../../install");
-const version = (await readFile(join(install, "current-version"), "utf8")).trim();
-const modules = join(install, "releases", version, "node_modules/@earendil-works");
-const sdk = await import(pathToFileURL(join(modules, "pi-coding-agent/dist/index.js")));
-const { loadExtensions, loadExtensionFromFactory } = await import(pathToFileURL(join(modules, "pi-coding-agent/dist/core/extensions/loader.js")));
-const { createAssistantMessageEventStream } = await import(pathToFileURL(join(modules, "pi-ai/dist/utils/event-stream.js")));
+let sdkUrl;
+try {
+	sdkUrl = import.meta.resolve("@earendil-works/pi-coding-agent");
+} catch (error) {
+	if (error.code !== "ERR_MODULE_NOT_FOUND") throw error;
+	const install = process.env.PI_MANAGED_INSTALL_ROOT;
+	if (!install) throw new Error("找不到 Pi SDK。请在仓库目录执行 npm install --no-save --package-lock=false @earendil-works/pi-coding-agent 后重试。");
+	const version = (await readFile(join(install, "current-version"), "utf8")).trim();
+	sdkUrl = pathToFileURL(join(install, "releases", version, "node_modules/@earendil-works/pi-coding-agent/dist/index.js")).href;
+}
+const sdk = await import(sdkUrl);
+const { loadExtensions, loadExtensionFromFactory } = await import(new URL("./core/extensions/loader.js", sdkUrl));
 const temp = await mkdtemp(join(tmpdir(), "pi-context-compact-check-"));
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 process.env.PI_CODING_AGENT_DIR = join(temp, "agent");
@@ -220,9 +226,10 @@ try {
 				stopReason: handingOff ? "toolUse" : "stop",
 				usage: { input: highUsage ? 65000 : 12000, output: 50, cacheRead: 0, cacheWrite: 0, totalTokens: highUsage ? 65050 : 12050, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
 			};
-			const stream = createAssistantMessageEventStream();
-			stream.push({ type: "done", reason: message.stopReason, message });
-			return stream;
+			return {
+				async *[Symbol.asyncIterator]() { yield { type: "done", reason: message.stopReason, message }; },
+				result: async () => message,
+			};
 		};
 		const prompt = async (text) => {
 			await Promise.race([
