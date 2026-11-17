@@ -1,0 +1,2 @@
+# Normalize text to LF in Git; use the local Git settings for checkout.
+* text=auto
