@@ -18,6 +18,7 @@ const userConfigPath = join(getAgentDir(), "context-compact.json");
 const configPaths = `默认配置：${configPath}\n用户配置：${userConfigPath}`;
 const stateType = "context-compact-state";
 const reminderType = "context-compact-reminder";
+const compactToolName = "compact_context";
 
 function validateThreshold(value: unknown, label: string): asserts value is Threshold {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} 必须是对象`);
@@ -109,7 +110,7 @@ export default function (pi: ExtensionAPI) {
 			setReminded(false);
 			return;
 		}
-		if (reminded) return;
+		if (reminded || !pi.getActiveTools().includes(compactToolName)) return;
 		setReminded(true);
 		const percent = usage.contextWindow > 0 ? (usage.tokens / usage.contextWindow * 100).toFixed(1) + "%" : "未知";
 		return {
@@ -159,7 +160,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerTool({
-		name: "compact_context",
+		name: compactToolName,
 		label: "交接完成，替换上下文并继续",
 		description: "将续跑指令写入 resumeInstructions，替换旧上下文并继续。不要在正文和工具参数中重复下达同一指令。请单独调用，不要与其他工具并行调用。",
 		parameters: Type.Object({

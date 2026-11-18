@@ -39,6 +39,7 @@ async function harness(settings = example, overrides) {
 	const branch = [];
 	let tokens = 59000;
 	loaded.runtime.appendEntry = (customType, data) => branch.push({ type: "custom", customType, data });
+	loaded.runtime.getActiveTools = () => ["compact_context"];
 	const ctx = {
 		cwd: temp, hasUI: false, model: { provider: "test", id: "demo" },
 		sessionManager: { getBranch: () => branch },
@@ -261,6 +262,46 @@ try {
 		console.log("PASS: real Pi SDK: same-session context replacement, single handoff, automatic continuation, repeated reset, queued user input preserved, old history retained and reopen persistence (7 model requests, 0 native summaries)");
 	} finally {
 		session.dispose();
+	}
+
+	// Match a subagent launched with --no-session --tools read.
+	const restrictedExtensions = await loadExtensions([extensionPath], temp);
+	assert.deepEqual(restrictedExtensions.errors, []);
+	const { session: restricted } = await sdk.createAgentSession({
+		cwd: temp, agentDir: temp, modelRuntime, model, thinkingLevel: "off",
+		resourceLoader: { ...resourceLoader, getExtensions: () => restrictedExtensions },
+		tools: ["read"], sessionManager: sdk.SessionManager.inMemory(temp),
+		settingsManager: sdk.SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }),
+	});
+	try {
+		const errors = [];
+		const requests = [];
+		await restricted.bindExtensions({ onError: (error) => errors.push(error) });
+		assert.deepEqual(restricted.getActiveToolNames(), ["read"]);
+		restricted.agent.streamFunction = (_model, context) => {
+			requests.push(JSON.stringify(context.messages));
+			const message = {
+				role: "assistant", api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(),
+				content: [{ type: "text", text: "Offline subagent result." }], stopReason: "stop",
+				usage: { input: 65000, output: 50, cacheRead: 0, cacheWrite: 0, totalTokens: 65050, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			};
+			return {
+				async *[Symbol.asyncIterator]() { yield { type: "done", reason: message.stopReason, message }; },
+				result: async () => message,
+			};
+		};
+		await restricted.prompt("Read-only task");
+		await restricted.waitForIdle();
+		assert.ok(restricted.getContextUsage().percent >= 60, "must reach the reminder threshold");
+		assert.equal(requests.length, 1, "must not force an extra model turn without compact_context");
+		await restricted.prompt("Follow-up while already above the threshold");
+		await restricted.waitForIdle();
+		assert.equal(requests.length, 2);
+		assert.ok(requests.every((request) => !request.includes("上下文已达到整理阈值")), "must not inject a reminder without compact_context");
+		assert.deepEqual(errors, []);
+		console.log("PASS: real Pi SDK: subagent tool allowlist excludes compact_context; no reminder or extra turn");
+	} finally {
+		restricted.dispose();
 	}
 } finally {
 	if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
